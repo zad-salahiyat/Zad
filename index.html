@@ -2780,8 +2780,7 @@ function authRefresh(){
 function initAuth(){
   var us=state.users||[];
   if(!us.length){if(window.__zadBootWait){me=null;lockUI(true);$('#lgMsg').textContent='جاري تحميل الحسابات…';return;}me=null;lockUI(false);applyRole();return;}
-  var id=sessGet();me=us.filter(function(u){return u.id===id;})[0]||null;
-  if(me){lockUI(false);applyRole();}else lockUI(true);
+  me=null;sessSet('');lockUI(true);
 }
 $('#loginForm').addEventListener('submit',function(ev){
   ev.preventDefault();
