@@ -2243,10 +2243,38 @@ $('#brSnapFile').addEventListener('change',function(){
   function tick(){
     var m=!me?'':(me.role==='branch'?'push':'pull');
     if(m!==mode){if(unsub){unsub();unsub=null;}mode=m;adopted=false;lastSig='';busy=false;want=(m==='push');}
+    if(Date.now()>=retryAt)pushUsers();
     if(Date.now()<retryAt||busy)return;
     if(mode==='pull'&&!unsub)listen();
     else if(mode==='push'&&want)pushNow();
   }
+  /* ---- حسابات المستخدمين في السحابة: أي جهاز جديد يفتح على تسجيل الدخول وآخر بيانات ---- */
+  var uSig='',usersReady=false,uBusy=false;
+  if(!(state.users||[]).length)window.__zadBootWait=true;
+  function usersJSON(){return JSON.stringify(state.users||[]);}
+  function releaseBoot(){if(!window.__zadBootWait)return;window.__zadBootWait=false;initAuth();}
+  function watchUsers(){
+    conn().then(function(f){
+      f.fs.onSnapshot(f.fs.doc(f.db,'appUsers','list'),function(s){
+        var raw=s.exists()?s.data().users:'',arr=null;try{arr=JSON.parse(raw);}catch(e){}
+        if(Array.isArray(arr)&&arr.length){
+          var changed=usersJSON()!==raw;
+          if(changed){state.users=arr;persist();}
+          uSig=raw;usersReady=true;
+          if(window.__zadBootWait)releaseBoot();else if(changed)authRefresh();
+        }else{usersReady=true;uSig='';releaseBoot();}
+      },function(e){releaseBoot();fail(e);});
+    }).catch(function(){releaseBoot();});
+  }
+  function pushUsers(){
+    if(uBusy||!usersReady||!(state.users||[]).length)return;
+    if(!((me&&me.role==='admin')||(!me&&!uSig)))return;
+    var j=usersJSON();if(j===uSig)return;
+    uBusy=true;
+    conn().then(function(f){return f.fs.setDoc(f.fs.doc(f.db,'appUsers','list'),{users:j,at:f.fs.serverTimestamp(),by:me?me.name:''});})
+      .then(function(){uSig=j;uBusy=false;}).catch(function(e){uBusy=false;fail(e);});
+  }
+  setTimeout(watchUsers,400);setTimeout(releaseBoot,9000);
   window.__zadSyncSoon=function(){if(me&&me.role==='branch')want=true;};
   window.addEventListener('online',function(){retryAt=0;if(mode==='push')want=true;});
   setTimeout(tick,2000);setInterval(tick,4000);
@@ -2751,7 +2779,7 @@ function authRefresh(){
 }
 function initAuth(){
   var us=state.users||[];
-  if(!us.length){me=null;lockUI(false);applyRole();return;}
+  if(!us.length){if(window.__zadBootWait){me=null;lockUI(true);$('#lgMsg').textContent='جاري تحميل الحسابات…';return;}me=null;lockUI(false);applyRole();return;}
   var id=sessGet();me=us.filter(function(u){return u.id===id;})[0]||null;
   if(me){lockUI(false);applyRole();}else lockUI(true);
 }
