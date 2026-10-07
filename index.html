@@ -953,7 +953,7 @@ function flushNow(){
     catch(e2){storageOK=false;}
   }
 }
-function persist(){dirty=true;clearTimeout(pt);pt=setTimeout(flushNow,250);if(window.__zadBackupSoon)window.__zadBackupSoon();}
+function persist(){dirty=true;clearTimeout(pt);pt=setTimeout(flushNow,250);if(window.__zadBackupSoon)window.__zadBackupSoon();if(window.__zadSyncSoon)window.__zadSyncSoon();}
 window.addEventListener('pagehide',flushNow);window.addEventListener('beforeunload',flushNow);
 document.addEventListener('visibilitychange',function(){if(document.hidden)flushNow();});
 function nextId(){state.seq=(state.seq||0)+1;return 'e'+state.seq;}
@@ -2142,6 +2142,115 @@ $('#brSnapFile').addEventListener('change',function(){
   };
   rd.readAsText(f);
 });
+/* ---------- مزامنة الفروع أونلاين (Firestore): الفرع يرفع، الأدمن والعرض يستقبلوا ---------- */
+(function(){
+  var SDK='https://www.gstatic.com/firebasejs/10.14.1/',F=null,mode='',unsub=null,busy=false,want=false,adopted=false,lastSig='',retryAt=0,warned=false;
+  function lg(k){try{return localStorage.getItem(k);}catch(e){return null;}}
+  function ls(k,v){try{localStorage.setItem(k,v);}catch(e){}}
+  function hm(){var d=new Date();return pad(d.getHours())+':'+pad(d.getMinutes());}
+  function setSt(t,bad){var el=document.getElementById('syncSt');if(!el){var ub=document.getElementById('userBox');if(!ub)return;el=document.createElement('small');el.id='syncSt';el.style.cssText='display:block;font-size:11px;opacity:.85';ub.appendChild(el);}el.textContent=t;el.style.color=bad?'#c0392b':'';}
+  function fail(e){retryAt=Date.now()+30000;busy=false;var c=e&&e.code||'';
+    if(c.indexOf('permission')>=0){setSt('المزامنة مرفوضة: اضبط قواعد Firestore',1);if(!warned){warned=true;toast('المزامنة مرفوضة من Firebase. محتاج تضيف قواعد branchSync');}}
+    else setSt('مفيش اتصال بالمزامنة، هنحاول تاني',1);}
+  function conn(){
+    if(F)return F;
+    F=Promise.all([import(SDK+'firebase-app.js'),import(SDK+'firebase-auth.js'),import(SDK+'firebase-firestore.js')]).then(function(m){
+      var app;try{app=m[0].getApp('zadsync');}catch(e){app=m[0].initializeApp(FB_CONFIG,'zadsync');}
+      var auth=m[1].getAuth(app);
+      return m[1].signInAnonymously(auth).then(function(){return {fs:m[2],db:m[2].getFirestore(app)};});
+    }).catch(function(e){F=null;throw e;});
+    return F;
+  }
+  function brPack(b){
+    var id=b.id,pre=id+'|',mod={},perm={};
+    Object.keys(state.mod||{}).forEach(function(k){if(k.indexOf(pre)===0)mod[k]=state.mod[k];});
+    Object.keys(state.permits||{}).forEach(function(k){var v=state.permits[k]||{};if(v.br===id)perm[k]=v;});
+    return {app:'expiry_tracker',fmt:1,kind:'branch',exportedAt:0,from:me?me.name:'',branch:{id:b.id,name:b.name},
+      entries:(state.entries||[]).filter(function(e){return e.br===id;}),
+      log:(state.log||[]).filter(function(l){return l.br===id;}).slice(0,500),
+      updated:(state.updated||{})[id]||'',updatedBy:(state.updatedBy||{})[id]||'',
+      pending:(state.pending||{})[id]||{},negs:(state.negs||{})[id]||{},mod:mod,permits:perm,
+      diag:(state.diag||[]).filter(function(g){return g.br===id;}),extra:state.extra||[]};
+  }
+  function applyPack(p){
+    if(!p||p.app!=='expiry_tracker'||p.kind!=='branch'||!p.branch||!p.branch.name||!Array.isArray(p.entries))return null;
+    var seen={},i;
+    for(i=0;i<p.entries.length;i++){var e=p.entries[i],q=Number(e&&e.q);
+      if(!e||!e.b||!isFinite(q)||q<0||q>1e9||!validDate(e.d))return null;
+      if(e.id){if(seen[e.id])return null;seen[e.id]=1;}}
+    var br=brById(p.branch.id);
+    if(br&&norm(br.name)!==norm(p.branch.name))br=null;
+    if(!br)br=state.branches.filter(function(b){return norm(b.name)===norm(p.branch.name);})[0]||null;
+    if(!br){br={id:(p.branch.id&&!brById(p.branch.id))?String(p.branch.id):'b'+Date.now().toString(36)+Math.floor(Math.random()*99),name:String(p.branch.name).trim()};state.branches.push(br);}
+    var id=br.id,pre=id+'|',srcPre=(p.branch.id||'')+'|';
+    state.entries=state.entries.filter(function(e){return e.br!==id;});
+    p.entries.forEach(function(e){var n=JSON.parse(JSON.stringify(e));n.id=nextId();n.br=id;n.q=Number(n.q);state.entries.push(n);});
+    state.extra=state.extra||[];
+    (p.extra||[]).forEach(function(x){if(Array.isArray(x)&&x[0]&&!lookup(x[0])){state.extra.push([x[0],x[1]]);addCat(x[0],x[1]);extraSet.add(x[0]);}});
+    state.log=(state.log||[]).filter(function(l){return l.br!==id;}).concat((p.log||[]).map(function(l){var c=JSON.parse(JSON.stringify(l));c.br=id;return c;}));
+    state.log.sort(function(a,b){return (b.t||0)-(a.t||0);});
+    state.updated=state.updated||{};state.updated[id]=p.updated||todayISO();
+    state.updatedBy=state.updatedBy||{};if(p.updatedBy)state.updatedBy[id]=p.updatedBy;
+    state.pending=state.pending||{};state.pending[id]=p.pending||{};
+    state.negs=state.negs||{};state.negs[id]=p.negs||{};
+    state.mod=state.mod||{};Object.keys(state.mod).forEach(function(k){if(k.indexOf(pre)===0)delete state.mod[k];});
+    Object.keys(p.mod||{}).forEach(function(k){if(k.indexOf(srcPre)===0)state.mod[pre+k.slice(srcPre.length)]=p.mod[k];});
+    state.diag=(state.diag||[]).filter(function(g){return g.br!==id;}).concat((p.diag||[]).map(function(g){var c=JSON.parse(JSON.stringify(g));c.br=id;return c;}));
+    state.permits=state.permits||{};Object.keys(state.permits).forEach(function(k){if((state.permits[k]||{}).br===id)delete state.permits[k];});
+    Object.keys(p.permits||{}).forEach(function(k){var v=JSON.parse(JSON.stringify(p.permits[k]||{}));v.br=id;state.permits[k]=v;});
+    return br;
+  }
+  function srvT(d){return d&&d.at&&d.at.toMillis?d.at.toMillis():0;}
+  function onSnap(snap){
+    var ap={},got=[],bak=null;try{ap=JSON.parse(lg('zad_sync_applied')||'{}');}catch(e){}
+    try{
+      snap.docChanges().forEach(function(c){
+        if(c.type==='removed')return;
+        var d=c.doc.data(),p=null;try{p=JSON.parse(d.pack);}catch(e){}
+        var t=srvT(d)||(p&&+p.exportedAt)||0;
+        if(!p||t<=(ap[c.doc.id]||0))return;
+        if(!bak)bak=JSON.stringify(state);
+        var r=applyPack(p);if(r){ap[c.doc.id]=t;got.push(r.name);}
+      });
+    }catch(err){console.error(err);if(bak){state=JSON.parse(bak);afterStateSwap();}setSt('خطأ في تطبيق بيانات فرع',1);return;}
+    if(got.length){ls('zad_sync_applied',JSON.stringify(ap));persist();renderBranchSelect();renderAllViews();toast('اتحدّثت بيانات: '+got.join('، '));}
+    setSt('● متزامن '+hm());
+  }
+  function listen(){
+    busy=true;setSt('جاري الاتصال…');
+    conn().then(function(f){busy=false;if(mode!=='pull')return;
+      unsub=f.fs.onSnapshot(f.fs.collection(f.db,'branchSync'),onSnap,function(e){if(unsub){unsub();unsub=null;}fail(e);});
+    }).catch(fail);
+  }
+  function pushNow(){
+    var b=me&&brById(me.br);if(!b)return;
+    if(navigator.onLine===false){setSt('بدون نت: هيتبعت لما النت يرجع',1);return;}
+    var o=brPack(b),core=JSON.stringify(o);
+    if(adopted&&core===lastSig){want=false;return;}
+    o.exportedAt=Date.now();var txt=JSON.stringify(o);
+    if(new TextEncoder().encode(txt).length>900000){want=false;setSt('بيانات الفرع أكبر من حد المزامنة',1);return;}
+    busy=true;
+    conn().then(function(f){
+      var ref=f.fs.doc(f.db,'branchSync',b.id),mk='zad_sync_mk_'+b.id;
+      return (adopted?Promise.resolve(null):f.fs.getDoc(ref)).then(function(s){
+        if(s&&s.exists()){var d=s.data(),p=null;try{p=JSON.parse(d.pack);}catch(e){}
+          if(p&&srvT(d)>(+lg(mk)||0)+60000&&applyPack(p)){adopted=true;ls(mk,String(Date.now()));persist();renderBranchSelect();renderAllViews();toast('اتحمّلت آخر نسخة من فرعك من السيرفر');lastSig='';busy=false;return;}}
+        adopted=true;
+        return f.fs.setDoc(ref,{pack:txt,at:f.fs.serverTimestamp(),by:me?me.name:'',name:b.name}).then(function(){want=false;busy=false;lastSig=core;ls(mk,String(Date.now()));setSt('● اتبعت '+hm());});
+      });
+    }).catch(function(e){want=true;fail(e);});
+  }
+  function tick(){
+    var m=!me?'':(me.role==='branch'?'push':'pull');
+    if(m!==mode){if(unsub){unsub();unsub=null;}mode=m;adopted=false;lastSig='';busy=false;want=(m==='push');}
+    if(Date.now()<retryAt||busy)return;
+    if(mode==='pull'&&!unsub)listen();
+    else if(mode==='push'&&want)pushNow();
+  }
+  window.__zadSyncSoon=function(){if(me&&me.role==='branch')want=true;};
+  window.addEventListener('online',function(){retryAt=0;if(mode==='push')want=true;});
+  setTimeout(tick,2000);setInterval(tick,4000);
+})();
 updUndoBtn();
 $('#modeView').addEventListener('change',function(){
   devView=this.checked;applyRole();
