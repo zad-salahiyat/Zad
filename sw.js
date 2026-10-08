@@ -1,6 +1,6 @@
 /* زاد — متابعة الصلاحيات: service worker
    غيّر رقم VERSION مع كل تحديث للموقع عشان الأجهزة تاخد النسخة الجديدة. */
-const VERSION = 'zad-v3';
+const VERSION = 'zad-v2';
 const SHELL = VERSION + '-shell';
 const RUNTIME = VERSION + '-runtime';
 const SHELL_FILES = [
